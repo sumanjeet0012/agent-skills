@@ -1,81 +1,121 @@
 ---
 name: tailscale-file-sharing
-description: Share files between Tailscale connected devices using Taildrop
+description: >
+  Send and receive files peer-to-peer across Tailscale-connected devices using Taildrop (`tailscale file`).
+  Covers target syntax, streaming stdin, managing inbox spools, conflict resolution policies,
+  and handling OS-specific receiving behaviors (macOS GUI vs Linux CLI).
+  Use when the user asks to "send file with tailscale", "share file to tailscale node",
+  "taildrop", "tailscale file cp", or "receive files with tailscale".
+compatibility: "Antigravity, Claude Desktop, Cursor, Cowork, Codex — any agent environment with Tailscale CLI"
+license: MIT
 ---
 
-## What I do
+# Taildrop: Peer-to-Peer File Sharing with Tailscale
 
-I help you share files between devices on your Tailscale network using Taildrop.
+Taildrop (`tailscale file`) enables encrypted, direct peer-to-peer file transfers between authenticated devices on your Tailnet. Files are transferred over the WireGuard mesh with zero relay file storage and no third-party cloud upload.
 
-## Prerequisites
+---
 
-- Tailscale CLI installed and authenticated on both devices
-- Devices must be on the same Tailscale network
+## Trigger Phrases
 
-## Send Files
+| User Input | Core Command |
+|---|---|
+| "Send this file to my laptop with Tailscale" | `tailscale file cp <file> <target>:` |
+| "Download files waiting in my Tailscale inbox" | `tailscale file get <target-dir>` |
+| "List devices I can send files to" | `tailscale file cp --targets` |
+| "Stream output directly to another machine" | `... | tailscale file cp --name=<name> - <target>:` |
 
-Send a file to another device:
+---
 
-```bash
-tailscale file cp <file> <target>
-```
+## 1. Sending Files (`tailscale file cp`)
 
-Target can be:
-- hostname: `tailscale file cp myfile.txt my-laptop`
-- Tailscale IP: `tailscale file cp myfile.txt 100.64.0.1`
-
-Send multiple files:
-
-```bash
-tailscale file cp file1.txt file2.txt my-laptop
-```
-
-Send to a specific path on target:
+### Basic File Transfer
+> [!IMPORTANT]
+> The target host MUST end with a trailing colon (`:`). Taildrop sends files directly to the remote device's secure inbox (custom remote paths are not permitted by Taildrop security design).
 
 ```bash
-tailscale file cp myfile.txt my-laptop:/home/user/documents/
+# Discover eligible file transfer targets on your tailnet
+tailscale file cp --targets
+
+# Send a single file
+tailscale file cp ./archive.tar.gz my-laptop:
+
+# Send multiple files in a single batch
+tailscale file cp doc1.pdf doc2.pdf image.png my-server:
 ```
 
-## Receive Files
-
-Files are received in:
-```
-~/Downloads/Tailscale/
-```
-
-List received files:
+### Stream Standard Input (Piping)
+Send command output or compressed archives directly to a remote machine without creating a temporary local file:
 
 ```bash
-ls ~/Downloads/Tailscale/
+# Pipe database dump directly to backup server
+pg_dump mydb | tailscale file cp --name=mydb_backup.sql - backup-node:
+
+# Pipe tar archive directly
+tar -czf - ./project/ | tailscale file cp --name=project_bundle.tar.gz - dev-box:
 ```
 
-## Check File Status
+---
 
-See pending file transfers:
+## 2. Receiving Files (`tailscale file get`)
+
+Receiving behavior depends on the operating system:
+
+### On Linux (CLI & Headless Servers)
+On Linux systems, incoming files are buffered in the local Tailscale daemon inbox until explicitly retrieved:
 
 ```bash
-tailscale file get
+# Move all incoming files into the current working directory
+tailscale file get .
+
+# Move files into a specific target folder
+tailscale file get ~/received_files/
+
+# Overwrite existing files if filenames conflict
+tailscale file get --conflict=overwrite ~/downloads/
+
+# Wait for an incoming file if the inbox is currently empty
+tailscale file get --wait ~/received_files/
+
+# Run daemon/loop to continuously receive incoming files as they arrive
+tailscale file get --loop ~/incoming/
 ```
 
-## Cancel Transfer
+### On macOS
+- If the Tailscale standalone macOS app is installed, incoming transfers display a system notification and files are automatically placed in `~/Downloads`.
+- If using `tailscaled` CLI on macOS, use `tailscale file get <target-directory>`.
 
-Cancel a pending file transfer:
+### On Windows
+- Files are saved to the user's `Downloads` folder automatically upon approval.
 
-```bash
-tailscale file cancel <transfer-id>
-```
+---
 
-## Limitations
+## 3. Conflict Resolution Options
 
-- Maximum file size: 1GB per file
-- Files expire after 7 days if not downloaded
-- Both devices must be online simultaneously
-- No resume capability for interrupted transfers
+When retrieving files with `tailscale file get`, control file overwrite behavior via `--conflict`:
 
-## Troubleshooting
+| Flag Option | Behavior |
+|---|---|
+| `--conflict=skip` (default) | Skips conflicting files, leaving them safe in the inbox |
+| `--conflict=overwrite` | Replaces the local file with the incoming version |
+| `--conflict=rename` | Renames the incoming file with a numeric suffix (e.g., `file-1.pdf`) |
 
-If file transfer fails:
-1. Verify both devices are online: `tailscale status`
-2. Check target device name/IP is correct
-3. Ensure sufficient disk space on target
-4. Check Tailscale permissions in ACLs
+---
+
+## 4. Taildrop Constraints & Specifications
+
+- **File Size Limits:** No hard protocol file size limit (tested beyond multiple gigabytes, constrained by available disk space).
+- **Inbox Expiration:** Spooled files remain available in the inbox for **7 days** before being discarded if not fetched.
+- **Concurrent State:** Both machines must be online and connected to the Tailnet during the initial transfer handoff.
+- **Encryption:** Fully end-to-end encrypted across WireGuard tunnels.
+
+---
+
+## 5. Troubleshooting Matrix
+
+| Issue | Cause | Solution |
+|---|---|---|
+| `host not found` | Missing trailing colon in target | Ensure syntax includes colon: `tailscale file cp file.txt host:` |
+| `transfer timed out` | Target machine is offline or in sleep mode | Verify online state with `tailscale status` |
+| `no incoming files` on Linux | Files haven't been pulled from inbox | Run `tailscale file get .` to extract from spool |
+| Permission denied writing files | Insufficient permissions on target directory | Ensure destination directory is writable by user |
